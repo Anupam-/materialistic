@@ -104,7 +104,6 @@ public class WebFragment extends LazyLoadFragment
     @Inject ReadabilityClient mReadabilityClient;
     private WebItem mItem;
     private boolean mIsHackerNewsUrl, mEmpty, mReadability;
-    @Synthetic boolean mPendingClearHistory;
 
     @Override
     public void onAttach(Context context) {
@@ -176,9 +175,7 @@ public class WebFragment extends LazyLoadFragment
 
     @Override
     protected void prepareOptionsMenu(Menu menu) {
-        menu.findItem(R.id.menu_readability).setVisible(!mIsHackerNewsUrl);
-        menu.findItem(R.id.menu_font_options).setVisible(mIsHackerNewsUrl ||
-                mReadability && !TextUtils.isEmpty(mContent));
+        menu.findItem(R.id.menu_font_options).setVisible(TextUtils.equals(BLANK, mWebView.getUrl()));
     }
 
     @Override
@@ -188,8 +185,8 @@ public class WebFragment extends LazyLoadFragment
             return true;
         }
         if (item.getItemId() == R.id.menu_readability) {
-            mReadability = !mReadability;
-            mPendingClearHistory = true;
+            mReadability = !TextUtils.equals(BLANK, mWebView.getUrl()); // invert current readability
+            mWebView.loadUrl(BLANK);
             reload();
             return true;
         }
@@ -286,7 +283,8 @@ public class WebFragment extends LazyLoadFragment
         mWebView.loadUrl(mItem.getUrl());
     }
 
-    private void loadContent() {
+    @Synthetic
+    void loadContent() {
         setWebSettings(false);
         mWebView.loadDataWithBaseURL(null, AppUtils.wrapHtml(getActivity(), mContent),
                 "text/html", "UTF-8", null);
@@ -294,7 +292,6 @@ public class WebFragment extends LazyLoadFragment
 
     private void reload() {
         mWebView.stopLoading();
-        mWebView.loadUrl(BLANK);
         load();
     }
 
@@ -365,7 +362,25 @@ public class WebFragment extends LazyLoadFragment
     private void setUpWebView(View view) {
         mProgressBar = (ProgressBar) view.findViewById(R.id.progress);
         mWebView.setBackgroundColor(Color.TRANSPARENT);
-        mWebView.setWebViewClient(new AdBlockWebViewClient(Preferences.adBlockEnabled(getActivity())));
+        mWebView.setWebViewClient(new AdBlockWebViewClient(Preferences.adBlockEnabled(getActivity())) {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                // back to blank page
+                if (TextUtils.equals(BLANK, url) && view.canGoForward()) {
+                    // page has title = readability view, reload it back and clear history to avoid loop
+                    if (!TextUtils.isEmpty(view.getTitle())) {
+                        view.clearHistory();
+                        loadContent();
+                    } else { // page has no title = buffer page during readability toggle, skip it
+                        view.goBack();
+                    }
+                }
+                if (getActivity() != null) {
+                    getActivity().supportInvalidateOptionsMenu();
+                }
+            }
+        });
         mWebView.setWebChromeClient(new CacheableWebView.ArchiveClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
@@ -375,10 +390,6 @@ public class WebFragment extends LazyLoadFragment
                 if (newProgress == 100) {
                     mProgressBar.setVisibility(GONE);
                     mWebView.setVisibility(mExternalRequired ? GONE : VISIBLE);
-                    if (mPendingClearHistory && !TextUtils.equals(BLANK, mWebView.getUrl())) {
-                        mPendingClearHistory = false;
-                        view.clearHistory();
-                    }
                 }
                 mButtonRefresh.setImageResource(newProgress == 100 ?
                         R.drawable.ic_refresh_white_24dp : R.drawable.ic_clear_white_24dp);
